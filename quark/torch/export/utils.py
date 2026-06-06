@@ -458,6 +458,22 @@ def get_state_dict_for_export(model: nn.Module) -> dict[str, torch.Tensor]:
                 module = module_map[module_name]
                 state_dict = get_state_dict_from_offload(module, module_name, state_dict)
 
+    # Remap internal quantizer buffer keys to the serialized external names before save.
+    #
+    # The safetensors exporter attaches `_fix_state_dict_key_on_save` (a per-key hook
+    # that maps `*.weight_quantizer.scale` -> `*.weight_scale`, `*.input_quantizer.scale`
+    # -> `*.input_scale`, etc.) for real_quantized models. That hook targets the per-key
+    # save path of transformers 4.57.x; on transformers >= 5.x, `save_pretrained` no
+    # longer invokes it (and the `_fix_state_dict_keys_on_save` attribute checked above
+    # is never set), so the rename would silently not happen and the checkpoint would be
+    # serialized with the internal `weight_quantizer.scale` names that downstream loaders
+    # (vLLM, AutoModelForCausalLM) do not recognize. Apply it explicitly here so the saved
+    # keys use the external convention regardless of the transformers version. Idempotent
+    # — external keys do not match the internal patterns, so re-application is a no-op.
+    fix_key = getattr(model, "_fix_state_dict_key_on_save", None)
+    if fix_key is not None:
+        state_dict = {fix_key(key)[0]: value for key, value in state_dict.items()}
+
     return state_dict
 
 
